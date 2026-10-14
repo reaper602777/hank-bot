@@ -1,22 +1,3 @@
 {
-  "rules": [
-    {
-      "keywords": ["hello hank", "hi hank", "hey hank"],
-      "response": "Hey {user}! 👋"
-    },
-    {
-      "keywords": "good bot",
-      "response": ["Thanks!", "I try my best.", "🥹"]
-    },
-    {
-      "keywords": "!rules",
-      "match": "exact",
-      "response": "Be kind, stay on topic, and have fun."
-    },
-    {
-      "keywords": "pizza",
-      "match": "contains",
-      "response": "Did someone say pizza? 🍕"
-    }
-  ]
+  "rules": []
 }
