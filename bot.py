@@ -4,6 +4,7 @@ Each server manages its own keywords, and auto-replies to specific users, with
 the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
 apply on every server, and edits to it are picked up without a restart.
 """
+import html
 import json
 import logging
 import os
@@ -14,12 +15,16 @@ import time
 from pathlib import Path
 
 import discord
+from aiohttp import web
 from discord import app_commands
 
 HERE = Path(__file__).parent
 CONFIG_PATH = Path(os.environ.get("HANK_CONFIG", HERE / "keywords.json"))
 DATA_DIR = Path(os.environ.get("HANK_DATA_DIR", HERE / "data"))
 MATCH_MODES = ("word", "contains", "exact")
+WEB_DIR = HERE / "web"
+# View Channels, Send Messages, Read Message History
+INVITE_PERMISSIONS = 1024 | 2048 | 65536
 
 log = logging.getLogger("hank")
 
@@ -326,8 +331,43 @@ async def hank_list(interaction: discord.Interaction):
     await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
+def invite_url():
+    client_id = os.environ.get("DISCORD_CLIENT_ID") or client.application_id
+    return (
+        f"https://discord.com/oauth2/authorize?client_id={client_id}"
+        f"&permissions={INVITE_PERMISSIONS}&scope=bot+applications.commands"
+    )
+
+
+async def landing_page(request):
+    page = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    page = page.replace("__INVITE_URL__", html.escape(invite_url()))
+    return web.Response(text=page, content_type="text/html")
+
+
+async def invite_redirect(request):
+    raise web.HTTPFound(invite_url())
+
+
+async def start_web():
+    """Serve the landing page when the host gives us a port (Railway sets PORT)."""
+    port = os.environ.get("PORT")
+    if not port:
+        return
+    app = web.Application()
+    app.router.add_get("/", landing_page)
+    app.router.add_get("/invite", invite_redirect)
+    app.router.add_get("/health", lambda request: web.Response(text="ok"))
+    app.router.add_get("/hank-avatar.png", lambda request: web.FileResponse(WEB_DIR / "hank-avatar.png"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    log.info("Landing page on port %s", port)
+
+
 @client.event
 async def setup_hook():
+    await start_web()
     await tree.sync()
 
 

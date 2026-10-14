@@ -74,7 +74,14 @@ Server keywords are stored in `data/hank.db`, or in `$HANK_DATA_DIR/hank.db` if 
 4. Add a **Volume** to the service (right-click the service, or the **+ New** menu) and set its mount path to `/data`. Without a volume, keywords added with `/hank` are wiped on every redeploy.
 5. Railway builds and starts it. `railway.json` tells it to run `python bot.py` and restart it if it ever stops. The **Deployments → Logs** view should show `Logged in as Hank#...`.
 
-No domain or port is needed, since the bot only connects out to Discord.
+### Landing page (optional)
+
+When Railway gives the service a port, Hank also serves a small landing page from `web/` with what Hank does, the command list and an **Add to Server** button. `/invite` redirects straight to the invite link.
+
+1. Open the service's **Settings → Networking** and click **Generate Domain** to get a free `*.up.railway.app` address. Railway sets the `PORT` variable for you.
+2. For your own domain, click **Custom Domain** in the same place, enter it (for example `hank.example.com`), and add the CNAME (and any TXT verification) record Railway shows at your DNS provider. HTTPS is set up automatically once DNS resolves.
+
+The invite button uses the bot's application ID automatically. Set `DISCORD_CLIENT_ID` only if you want it to point at a different application. Without a port (locally, or on the Ubuntu server) no web server starts.
 
 Code changes pushed to GitHub redeploy automatically. Keywords set with `/hank` survive redeploys because they live on the volume.
 

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hank · Discord bot</title>
+<meta name="description" content="Hank replies to your server's keywords with your own custom responses.">
+<meta property="og:title" content="Hank">
+<meta property="og:description" content="A Discord bot that replies to keywords with custom responses.">
+<meta property="og:image" content="/hank-avatar.png">
+<link rel="icon" href="/hank-avatar.png">
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --panel: #ffffff;
+    --text: #1e1f22;
+    --muted: #5c5e66;
+    --border: #e3e5ea;
+    --accent: #5865f2;
+    --accent-hover: #4752c4;
+    --code-bg: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1f22;
+      --panel: #2b2d31;
+      --text: #f2f3f5;
+      --muted: #b5bac1;
+      --border: #3a3c42;
+      --code-bg: #1e1f22;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+  header { text-align: center; margin-bottom: 48px; }
+  header img { width: 128px; height: 128px; border-radius: 50%; box-shadow: 0 4px 24px rgba(0,0,0,.2); }
+  h1 { font-size: 2.6rem; margin: 16px 0 4px; }
+  .tagline { color: var(--muted); font-size: 1.15rem; margin: 0 0 28px; }
+  .button {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+    padding: 12px 28px;
+    border-radius: 8px;
+    transition: background .15s;
+  }
+  .button:hover { background: var(--accent-hover); }
+  h2 { font-size: 1.4rem; margin: 40px 0 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  .commands { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .command { padding: 14px 18px; border-top: 1px solid var(--border); }
+  .command:first-child { border-top: 0; }
+  .command code { font-weight: 600; }
+  .command p { margin: 4px 0 0; color: var(--muted); font-size: .95rem; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: .9em; overflow-wrap: anywhere; }
+  .note { color: var(--muted); font-size: .95rem; }
+  footer { margin-top: 56px; text-align: center; color: var(--muted); font-size: .9rem; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="/hank-avatar.png" alt="Hank's avatar">
+    <h1>Hank</h1>
+    <p class="tagline">A Discord bot that replies to your keywords with your own custom responses.</p>
+    <a class="button" href="__INVITE_URL__">Add Hank to your server</a>
+  </header>
+
+  <h2>What Hank does</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>Keyword replies</h3>
+      <p>Pick a word or phrase and what Hank says back whenever someone uses it.</p>
+    </div>
+    <div class="card">
+      <h3>Random replies</h3>
+      <p>Give a keyword several replies and Hank picks one at random each time.</p>
+    </div>
+    <div class="card">
+      <h3>User auto-replies</h3>
+      <p>Have Hank answer everything a certain person says, with an optional cooldown.</p>
+    </div>
+    <div class="card">
+      <h3>Per server</h3>
+      <p>Every server keeps its own list, set up right from Discord with slash commands.</p>
+    </div>
+  </div>
+
+  <h2>Commands</h2>
+  <div class="commands">
+    <div class="command">
+      <code>/hank add keyword response [match]</code>
+      <p>Reply to a keyword. Add the same keyword again to give Hank more replies to pick from.</p>
+    </div>
+    <div class="command">
+      <code>/hank remove keyword</code>
+      <p>Stop replying to a keyword and delete all its replies.</p>
+    </div>
+    <div class="command">
+      <code>/hank user-add user response [cooldown]</code>
+      <p>Reply to every message from a user, at most once every <em>cooldown</em> minutes if you set one.</p>
+    </div>
+    <div class="command">
+      <code>/hank user-remove user</code>
+      <p>Stop auto-replying to a user.</p>
+    </div>
+    <div class="command">
+      <code>/hank list</code>
+      <p>Show this server's keywords and user auto-replies. Only you see the answer.</p>
+    </div>
+  </div>
+  <p class="note">
+    Commands need the <strong>Manage Server</strong> permission by default; you can open them up to other roles under
+    Server Settings → Integrations → Hank. Matching ignores case, and <code>{user}</code> in a reply mentions whoever
+    triggered it. <code>match</code> can be whole word (default), anywhere in the message, or whole message only.
+  </p>
+
+  <footer>
+    Hank is open source on <a href="https://github.com/reaper602777/hank-bot">GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>
