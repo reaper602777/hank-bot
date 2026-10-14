@@ -1,7 +1,7 @@
 """Hank bot: replies to keywords with custom responses.
 
-Each server manages its own keywords with the /hank slash commands; those are
-stored in a SQLite database. keywords.json holds optional global rules that
+Each server manages its own keywords, and auto-replies to specific users, with
+the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
 apply on every server, and edits to it are picked up without a restart.
 """
 import json
@@ -10,6 +10,7 @@ import os
 import random
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 import discord
@@ -87,8 +88,19 @@ class ServerRules:
             )"""
         )
         self.db.execute("CREATE INDEX IF NOT EXISTS rules_guild ON rules (guild_id)")
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS user_rules (
+                id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                cooldown INTEGER NOT NULL DEFAULT 0,
+                response TEXT NOT NULL
+            )"""
+        )
+        self.db.execute("CREATE INDEX IF NOT EXISTS user_rules_guild ON user_rules (guild_id, user_id)")
         self.db.commit()
         self.cache = {}
+        self.last_user_reply = {}
         log.info("Using database %s", db_path)
 
     def add(self, guild_id, keyword, response, match):
@@ -129,6 +141,53 @@ class ServerRules:
             grouped.setdefault(keyword.lower(), [keyword, match, []])[2].append(response)
         return [tuple(v) for v in grouped.values()]
 
+    def add_user(self, guild_id, user_id, response, cooldown):
+        # One cooldown per user: adding again with a new cooldown updates it
+        self.db.execute(
+            "UPDATE user_rules SET cooldown = ? WHERE guild_id = ? AND user_id = ?",
+            (cooldown, guild_id, user_id),
+        )
+        self.db.execute(
+            "INSERT INTO user_rules (guild_id, user_id, cooldown, response) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, cooldown, response),
+        )
+        self.db.commit()
+        return self.db.execute(
+            "SELECT COUNT(*) FROM user_rules WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        ).fetchone()[0]
+
+    def remove_user(self, guild_id, user_id):
+        cur = self.db.execute(
+            "DELETE FROM user_rules WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def list_users(self, guild_id):
+        """Return [(user_id, cooldown_minutes, [responses])]."""
+        grouped = {}
+        for user_id, cooldown, response in self.db.execute(
+            "SELECT user_id, cooldown, response FROM user_rules WHERE guild_id = ? ORDER BY id",
+            (guild_id,),
+        ):
+            grouped.setdefault(user_id, [user_id, cooldown, []])[2].append(response)
+        return [tuple(v) for v in grouped.values()]
+
+    def user_response(self, guild_id, user_id):
+        """A reply for this user if they have auto-replies and aren't on cooldown."""
+        rows = self.db.execute(
+            "SELECT cooldown, response FROM user_rules WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        ).fetchall()
+        if not rows:
+            return None
+        key = (guild_id, user_id)
+        now = time.monotonic()
+        if now - self.last_user_reply.get(key, float("-inf")) < rows[0][0] * 60:
+            return None
+        self.last_user_reply[key] = now
+        return random.choice(rows)[1]
+
     def get(self, guild_id):
         if guild_id not in self.cache:
             self.cache[guild_id] = [
@@ -142,8 +201,12 @@ global_rules = GlobalRules(CONFIG_PATH)
 server_rules = ServerRules(DATA_DIR / "hank.db")
 
 
-def find_response(guild_id, text):
-    """Server keywords are checked first, then the global ones from keywords.json."""
+def find_response(guild_id, user_id, text):
+    """User auto-replies come first, then server keywords, then keywords.json."""
+    if guild_id:
+        response = server_rules.user_response(guild_id, user_id)
+        if response:
+            return response
     rules = (server_rules.get(guild_id) if guild_id else []) + global_rules.get()
     for pattern, responses in rules:
         if pattern.search(text):
@@ -206,13 +269,53 @@ async def keyword_autocomplete(interaction: discord.Interaction, current: str):
     ][:25]
 
 
-@hank.command(name="list", description="Show this server's keywords")
+@hank.command(name="user-add", description="Reply to every message from a user. Add again for random replies.")
+@app_commands.describe(
+    user="Who Hank replies to",
+    response="What Hank says. Use {user} to mention them.",
+    cooldown="Minutes to wait before replying to them again (default 0: every message)",
+)
+async def hank_user_add(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    response: app_commands.Range[str, 1, 2000],
+    cooldown: app_commands.Range[int, 0, 10080] = 0,
+):
+    if user.bot:
+        await interaction.response.send_message("Hank ignores bots, so pick a person.", ephemeral=True)
+        return
+    total = server_rules.add_user(interaction.guild_id, user.id, response, cooldown)
+    extra = f" They now have {total} replies to pick from." if total > 1 else ""
+    wait = f", at most once every {cooldown} min" if cooldown else ""
+    await interaction.response.send_message(
+        f"Hank will reply to {user.mention}{wait}.{extra}",
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@hank.command(name="user-remove", description="Stop auto-replying to a user")
+@app_commands.describe(user="The user to stop replying to")
+async def hank_user_remove(interaction: discord.Interaction, user: discord.User):
+    removed = server_rules.remove_user(interaction.guild_id, user.id)
+    msg = f"Stopped replying to {user.mention}." if removed else f"Hank wasn't auto-replying to {user.mention}."
+    await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+@hank.command(name="list", description="Show this server's keywords and user auto-replies")
 async def hank_list(interaction: discord.Interaction):
     rules = server_rules.list(interaction.guild_id)
-    if not rules:
-        await interaction.response.send_message("No keywords yet. Add one with `/hank add`.", ephemeral=True)
+    users = server_rules.list_users(interaction.guild_id)
+    if not rules and not users:
+        await interaction.response.send_message(
+            "Nothing set yet. Add a keyword with `/hank add` or a user with `/hank user-add`.", ephemeral=True
+        )
         return
     lines = []
+    for user_id, cooldown, responses in users:
+        wait = f" (every {cooldown} min)" if cooldown else ""
+        lines.append(f"<@{user_id}>{wait}")
+        lines.extend(f"  → {r}" for r in responses)
     for kw, match, responses in rules:
         mode = "" if match == "word" else f" ({match})"
         lines.append(f"**{kw}**{mode}")
@@ -220,7 +323,7 @@ async def hank_list(interaction: discord.Interaction):
     text = "\n".join(lines)
     if len(text) > 1900:
         text = text[:1900] + "\n…and more"
-    await interaction.response.send_message(text, ephemeral=True)
+    await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 @client.event
@@ -238,7 +341,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    response = find_response(message.guild.id if message.guild else None, message.content)
+    response = find_response(message.guild.id if message.guild else None, message.author.id, message.content)
     if response:
         await message.channel.send(
             response.replace("{user}", message.author.mention),

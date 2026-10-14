@@ -36,7 +36,11 @@ Anyone with the **Manage Server** permission can use these. Each server's keywor
 
 - `/hank add keyword:<word> response:<reply> [match:]` adds a reply. Add the same keyword again with another response and Hank picks one at random.
 - `/hank remove keyword:<word>` removes a keyword and all its replies.
-- `/hank list` shows this server's keywords. Only you see the answer.
+- `/hank user-add user:@someone response:<reply> [cooldown:]` makes Hank reply to every message that person posts. `cooldown` is optional: the number of minutes to wait before replying to them again. Add the same user again with another response and Hank picks one at random.
+- `/hank user-remove user:@someone` stops replying to that person.
+- `/hank list` shows this server's keywords and user auto-replies. Only you see the answer.
+
+A user auto-reply takes priority over keywords. While it's on cooldown, that person's messages can still trigger keywords. Hank sends at most one reply per message.
 
 Matching ignores upper/lower case, and `{user}` in a reply mentions whoever triggered it. `match` is optional:
 
