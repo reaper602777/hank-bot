@@ -1,0 +1,15 @@
+[Unit]
+Description=Hank Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hank
+WorkingDirectory=/opt/hank-bot
+EnvironmentFile=/opt/hank-bot/.env
+ExecStart=/opt/hank-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
