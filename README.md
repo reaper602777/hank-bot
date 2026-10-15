@@ -7,7 +7,7 @@ A Discord bot that replies to keywords with custom responses. Each server sets i
 1. Go to https://discord.com/developers/applications and click **New Application**. Name it Hank.
 2. Open the **Bot** tab. Click **Reset Token**, copy the token, and keep it secret.
 3. On the same tab, under **Privileged Gateway Intents**, turn on **Message Content Intent** and save. Without this the bot can't read messages.
-4. Open **OAuth2 → URL Generator**. Tick the `bot` and `applications.commands` scopes, then the permissions **View Channels**, **Send Messages** and **Read Message History**.
+4. Open **OAuth2 → URL Generator**. Tick the `bot` and `applications.commands` scopes, then the permissions **View Channels**, **Send Messages**, **Embed Links** and **Read Message History**. Embed Links lets links in Hank's replies, like a YouTube video or Google Sheet, show a preview.
 5. Open the generated URL, pick your server, and authorize. Use the same URL to add Hank to more servers.
 
 ## 2. Run it

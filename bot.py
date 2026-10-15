@@ -25,8 +25,8 @@ DATA_DIR = Path(os.environ.get("HANK_DATA_DIR", HERE / "data"))
 MATCH_MODES = ("word", "contains", "exact")
 COMMAND_NAME = re.compile(r"^[\w-]{1,32}$")
 WEB_DIR = HERE / "web"
-# View Channels, Send Messages, Read Message History
-INVITE_PERMISSIONS = 1024 | 2048 | 65536
+# View Channels, Send Messages, Embed Links (previews for links in replies), Read Message History
+INVITE_PERMISSIONS = 1024 | 2048 | 16384 | 65536
 
 log = logging.getLogger("hank")
 
