@@ -1,7 +1,7 @@
 """Hank bot: replies to keywords with custom responses.
 
-Each server manages its own keywords, and auto-replies to specific users, with
-the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
+Each server manages its own keywords, ! commands, and auto-replies to specific
+users with the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
 apply on every server, and edits to it are picked up without a restart.
 """
 import html
@@ -13,6 +13,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from typing import Optional
 
 import discord
 from aiohttp import web
@@ -22,6 +23,7 @@ HERE = Path(__file__).parent
 CONFIG_PATH = Path(os.environ.get("HANK_CONFIG", HERE / "keywords.json"))
 DATA_DIR = Path(os.environ.get("HANK_DATA_DIR", HERE / "data"))
 MATCH_MODES = ("word", "contains", "exact")
+COMMAND_NAME = re.compile(r"^[\w-]{1,32}$")
 WEB_DIR = HERE / "web"
 # View Channels, Send Messages, Read Message History
 INVITE_PERMISSIONS = 1024 | 2048 | 65536
@@ -93,6 +95,9 @@ class ServerRules:
             )"""
         )
         self.db.execute("CREATE INDEX IF NOT EXISTS rules_guild ON rules (guild_id)")
+        # Databases from before keyword cooldowns existed lack this column
+        if "cooldown" not in [row[1] for row in self.db.execute("PRAGMA table_info(rules)")]:
+            self.db.execute("ALTER TABLE rules ADD COLUMN cooldown INTEGER NOT NULL DEFAULT 0")
         self.db.execute(
             """CREATE TABLE IF NOT EXISTS user_rules (
                 id INTEGER PRIMARY KEY,
@@ -103,21 +108,37 @@ class ServerRules:
             )"""
         )
         self.db.execute("CREATE INDEX IF NOT EXISTS user_rules_guild ON user_rules (guild_id, user_id)")
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS commands (
+                id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL COLLATE NOCASE,
+                response TEXT NOT NULL
+            )"""
+        )
+        self.db.execute("CREATE INDEX IF NOT EXISTS commands_guild ON commands (guild_id, name)")
         self.db.commit()
         self.cache = {}
         self.last_user_reply = {}
+        self.last_keyword_reply = {}
         log.info("Using database %s", db_path)
 
-    def add(self, guild_id, keyword, response, match):
+    def add(self, guild_id, keyword, response, match, cooldown=None):
+        """Add a reply. cooldown=None keeps the keyword's current cooldown (0 if new)."""
         keyword = keyword.strip()
-        # One match mode per keyword: adding again with a new mode updates it
+        if cooldown is None:
+            row = self.db.execute(
+                "SELECT cooldown FROM rules WHERE guild_id = ? AND keyword = ? LIMIT 1", (guild_id, keyword)
+            ).fetchone()
+            cooldown = row[0] if row else 0
+        # One match mode and cooldown per keyword: adding again with new ones updates them
         self.db.execute(
-            "UPDATE rules SET match = ? WHERE guild_id = ? AND keyword = ?",
-            (match, guild_id, keyword),
+            "UPDATE rules SET match = ?, cooldown = ? WHERE guild_id = ? AND keyword = ?",
+            (match, cooldown, guild_id, keyword),
         )
         self.db.execute(
-            "INSERT INTO rules (guild_id, keyword, match, response) VALUES (?, ?, ?, ?)",
-            (guild_id, keyword, match, response),
+            "INSERT INTO rules (guild_id, keyword, match, cooldown, response) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, keyword, match, cooldown, response),
         )
         self.db.commit()
         self.cache.pop(guild_id, None)
@@ -131,20 +152,63 @@ class ServerRules:
         self.cache.pop(guild_id, None)
         return cur.rowcount
 
+    def set_cooldown(self, guild_id, keyword, cooldown):
+        cur = self.db.execute(
+            "UPDATE rules SET cooldown = ? WHERE guild_id = ? AND keyword = ?", (cooldown, guild_id, keyword.strip())
+        )
+        self.db.commit()
+        self.cache.pop(guild_id, None)
+        return cur.rowcount
+
     def count(self, guild_id, keyword):
         return self.db.execute(
             "SELECT COUNT(*) FROM rules WHERE guild_id = ? AND keyword = ?", (guild_id, keyword)
         ).fetchone()[0]
 
     def list(self, guild_id):
-        """Return [(keyword, match, [responses])] in the order keywords were first added."""
+        """Return [(keyword, match, cooldown_minutes, [responses])] in the order keywords were first added."""
         grouped = {}
-        for keyword, match, response in self.db.execute(
-            "SELECT keyword, match, response FROM rules WHERE guild_id = ? ORDER BY id",
+        for keyword, match, cooldown, response in self.db.execute(
+            "SELECT keyword, match, cooldown, response FROM rules WHERE guild_id = ? ORDER BY id",
             (guild_id,),
         ):
-            grouped.setdefault(keyword.lower(), [keyword, match, []])[2].append(response)
+            grouped.setdefault(keyword.lower(), [keyword, match, cooldown, []])[3].append(response)
         return [tuple(v) for v in grouped.values()]
+
+    def add_command(self, guild_id, name, response):
+        self.db.execute(
+            "INSERT INTO commands (guild_id, name, response) VALUES (?, ?, ?)", (guild_id, name, response)
+        )
+        self.db.commit()
+        return self.db.execute(
+            "SELECT COUNT(*) FROM commands WHERE guild_id = ? AND name = ?", (guild_id, name)
+        ).fetchone()[0]
+
+    def remove_command(self, guild_id, name):
+        cur = self.db.execute("DELETE FROM commands WHERE guild_id = ? AND name = ?", (guild_id, name))
+        self.db.commit()
+        return cur.rowcount
+
+    def list_commands(self, guild_id):
+        """Return [(name, [responses])] in the order commands were first added."""
+        grouped = {}
+        for name, response in self.db.execute(
+            "SELECT name, response FROM commands WHERE guild_id = ? ORDER BY id", (guild_id,)
+        ):
+            grouped.setdefault(name.lower(), [name, []])[1].append(response)
+        return [tuple(v) for v in grouped.values()]
+
+    def command_response(self, guild_id, text):
+        """A reply if the message starts with one of this server's !commands."""
+        if not text.startswith("!"):
+            return None
+        words = text[1:].split(maxsplit=1)
+        if not words:
+            return None
+        rows = self.db.execute(
+            "SELECT response FROM commands WHERE guild_id = ? AND name = ?", (guild_id, words[0])
+        ).fetchall()
+        return random.choice(rows)[0] if rows else None
 
     def add_user(self, guild_id, user_id, response, cooldown):
         # One cooldown per user: adding again with a new cooldown updates it
@@ -196,10 +260,23 @@ class ServerRules:
     def get(self, guild_id):
         if guild_id not in self.cache:
             self.cache[guild_id] = [
-                (compile_pattern([kw], match), responses)
-                for kw, match, responses in self.list(guild_id)
+                (kw.lower(), compile_pattern([kw], match), cooldown, responses)
+                for kw, match, cooldown, responses in self.list(guild_id)
             ]
         return self.cache[guild_id]
+
+    def keyword_response(self, guild_id, text):
+        """A reply for the first matching keyword that isn't on cooldown."""
+        now = time.monotonic()
+        for kw, pattern, cooldown, responses in self.get(guild_id):
+            if not pattern.search(text):
+                continue
+            key = (guild_id, kw)
+            if cooldown and now - self.last_keyword_reply.get(key, float("-inf")) < cooldown * 60:
+                continue
+            self.last_keyword_reply[key] = now
+            return random.choice(responses)
+        return None
 
 
 global_rules = GlobalRules(CONFIG_PATH)
@@ -207,13 +284,16 @@ server_rules = ServerRules(DATA_DIR / "hank.db")
 
 
 def find_response(guild_id, user_id, text):
-    """User auto-replies come first, then server keywords, then keywords.json."""
+    """! commands come first, then user auto-replies, server keywords, and keywords.json."""
     if guild_id:
-        response = server_rules.user_response(guild_id, user_id)
+        response = (
+            server_rules.command_response(guild_id, text)
+            or server_rules.user_response(guild_id, user_id)
+            or server_rules.keyword_response(guild_id, text)
+        )
         if response:
             return response
-    rules = (server_rules.get(guild_id) if guild_id else []) + global_rules.get()
-    for pattern, responses in rules:
+    for pattern, responses in global_rules.get():
         if pattern.search(text):
             return random.choice(responses)
     return None
@@ -226,7 +306,7 @@ tree = app_commands.CommandTree(client)
 
 hank = app_commands.Group(
     name="hank",
-    description="Manage Hank's keywords on this server",
+    description="Manage Hank's keywords and commands on this server",
     guild_only=True,
     default_permissions=discord.Permissions(manage_guild=True),
 )
@@ -244,6 +324,7 @@ MATCH_CHOICES = [
     keyword="Word or phrase to listen for (case doesn't matter)",
     response="What Hank says. Use {user} to mention the person.",
     match="How the keyword has to appear in a message",
+    cooldown="Minutes to wait before replying to this keyword again (default: no cooldown)",
 )
 @app_commands.choices(match=MATCH_CHOICES)
 async def hank_add(
@@ -251,10 +332,26 @@ async def hank_add(
     keyword: app_commands.Range[str, 1, 100],
     response: app_commands.Range[str, 1, 2000],
     match: str = "word",
+    cooldown: Optional[app_commands.Range[int, 0, 10080]] = None,
 ):
-    total = server_rules.add(interaction.guild_id, keyword, response, match)
+    total = server_rules.add(interaction.guild_id, keyword, response, match, cooldown)
     extra = f" It now has {total} replies to pick from." if total > 1 else ""
-    await interaction.response.send_message(f"Added a reply for **{keyword.strip()}**.{extra}", ephemeral=True)
+    wait = f" Hank replies to it at most once every {cooldown} min." if cooldown else ""
+    await interaction.response.send_message(f"Added a reply for **{keyword.strip()}**.{extra}{wait}", ephemeral=True)
+
+
+@hank.command(name="cooldown", description="Set how often Hank can reply to a keyword")
+@app_commands.describe(keyword="The keyword to change", minutes="Minutes between replies (0 turns the cooldown off)")
+async def hank_cooldown(
+    interaction: discord.Interaction, keyword: str, minutes: app_commands.Range[int, 0, 10080]
+):
+    if not server_rules.set_cooldown(interaction.guild_id, keyword, minutes):
+        msg = f"There's no keyword **{keyword}** on this server."
+    elif minutes:
+        msg = f"Hank will reply to **{keyword}** at most once every {minutes} min."
+    else:
+        msg = f"Turned off the cooldown for **{keyword}**."
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
 @hank.command(name="remove", description="Stop replying to a keyword (removes all its replies)")
@@ -266,11 +363,52 @@ async def hank_remove(interaction: discord.Interaction, keyword: str):
 
 
 @hank_remove.autocomplete("keyword")
+@hank_cooldown.autocomplete("keyword")
 async def keyword_autocomplete(interaction: discord.Interaction, current: str):
     return [
         app_commands.Choice(name=kw, value=kw)
-        for kw, _, _ in server_rules.list(interaction.guild_id)
+        for kw, _, _, _ in server_rules.list(interaction.guild_id)
         if current.lower() in kw.lower()
+    ][:25]
+
+
+@hank.command(name="command-add", description="Make a !command. Add the same name again for random replies.")
+@app_commands.describe(
+    name="Command name, without the ! (letters, numbers, - and _)",
+    response="What Hank says when someone types !name. Use {user} to mention them.",
+)
+async def hank_command_add(
+    interaction: discord.Interaction,
+    name: app_commands.Range[str, 1, 33],
+    response: app_commands.Range[str, 1, 2000],
+):
+    name = name.strip().removeprefix("!")
+    if not COMMAND_NAME.match(name):
+        await interaction.response.send_message(
+            "Command names can only use letters, numbers, - and _, with no spaces (up to 32).", ephemeral=True
+        )
+        return
+    total = server_rules.add_command(interaction.guild_id, name, response)
+    extra = f" It now has {total} replies to pick from." if total > 1 else ""
+    await interaction.response.send_message(f"Added **!{name}**.{extra}", ephemeral=True)
+
+
+@hank.command(name="command-remove", description="Delete a !command and all its replies")
+@app_commands.describe(name="The command to remove, without the !")
+async def hank_command_remove(interaction: discord.Interaction, name: str):
+    name = name.strip().removeprefix("!")
+    removed = server_rules.remove_command(interaction.guild_id, name)
+    msg = f"Removed **!{name}**." if removed else f"There's no command **!{name}** on this server."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@hank_command_remove.autocomplete("name")
+async def command_autocomplete(interaction: discord.Interaction, current: str):
+    current = current.removeprefix("!").lower()
+    return [
+        app_commands.Choice(name=f"!{name}", value=name)
+        for name, _ in server_rules.list_commands(interaction.guild_id)
+        if current in name.lower()
     ][:25]
 
 
@@ -307,23 +445,30 @@ async def hank_user_remove(interaction: discord.Interaction, user: discord.User)
     await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-@hank.command(name="list", description="Show this server's keywords and user auto-replies")
+@hank.command(name="list", description="Show this server's keywords, !commands and user auto-replies")
 async def hank_list(interaction: discord.Interaction):
     rules = server_rules.list(interaction.guild_id)
     users = server_rules.list_users(interaction.guild_id)
-    if not rules and not users:
+    commands = server_rules.list_commands(interaction.guild_id)
+    if not rules and not users and not commands:
         await interaction.response.send_message(
-            "Nothing set yet. Add a keyword with `/hank add` or a user with `/hank user-add`.", ephemeral=True
+            "Nothing set yet. Add a keyword with `/hank add`, a command with `/hank command-add`, "
+            "or a user with `/hank user-add`.",
+            ephemeral=True,
         )
         return
     lines = []
+    for name, responses in commands:
+        lines.append(f"**!{name}**")
+        lines.extend(f"  → {r}" for r in responses)
     for user_id, cooldown, responses in users:
         wait = f" (every {cooldown} min)" if cooldown else ""
         lines.append(f"<@{user_id}>{wait}")
         lines.extend(f"  → {r}" for r in responses)
-    for kw, match, responses in rules:
-        mode = "" if match == "word" else f" ({match})"
-        lines.append(f"**{kw}**{mode}")
+    for kw, match, cooldown, responses in rules:
+        notes = ([] if match == "word" else [match]) + ([f"every {cooldown} min"] if cooldown else [])
+        extra = f" ({', '.join(notes)})" if notes else ""
+        lines.append(f"**{kw}**{extra}")
         lines.extend(f"  → {r}" for r in responses)
     text = "\n".join(lines)
     if len(text) > 1900:
