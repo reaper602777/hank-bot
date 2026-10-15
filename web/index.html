@@ -93,6 +93,14 @@
       <p>Have Hank answer everything a certain person says, with an optional cooldown.</p>
     </div>
     <div class="card">
+      <h3>! commands</h3>
+      <p>Make your own commands like <code>!rules</code> or <code>!ip</code> that Hank answers instantly.</p>
+    </div>
+    <div class="card">
+      <h3>Cooldowns</h3>
+      <p>Keep a busy keyword from spamming by letting Hank reply only once every few minutes.</p>
+    </div>
+    <div class="card">
       <h3>Per server</h3>
       <p>Every server keeps its own list, set up right from Discord with slash commands.</p>
     </div>
@@ -101,12 +109,24 @@
   <h2>Commands</h2>
   <div class="commands">
     <div class="command">
-      <code>/hank add keyword response [match]</code>
-      <p>Reply to a keyword. Add the same keyword again to give Hank more replies to pick from.</p>
+      <code>/hank add keyword response [match] [cooldown]</code>
+      <p>Reply to a keyword, at most once every <em>cooldown</em> minutes if you set one. Add the same keyword again to give Hank more replies to pick from.</p>
+    </div>
+    <div class="command">
+      <code>/hank cooldown keyword minutes</code>
+      <p>Change how often Hank can reply to a keyword. 0 turns the cooldown off.</p>
     </div>
     <div class="command">
       <code>/hank remove keyword</code>
       <p>Stop replying to a keyword and delete all its replies.</p>
+    </div>
+    <div class="command">
+      <code>/hank command-add name response</code>
+      <p>Make a <code>!name</code> command. Hank replies when a message starts with it.</p>
+    </div>
+    <div class="command">
+      <code>/hank command-remove name</code>
+      <p>Delete a ! command and all its replies.</p>
     </div>
     <div class="command">
       <code>/hank user-add user response [cooldown]</code>
@@ -118,7 +138,7 @@
     </div>
     <div class="command">
       <code>/hank list</code>
-      <p>Show this server's keywords and user auto-replies. Only you see the answer.</p>
+      <p>Show this server's ! commands, keywords and user auto-replies. Only you see the answer.</p>
     </div>
   </div>
   <p class="note">

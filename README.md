@@ -7,7 +7,7 @@ A Discord bot that replies to keywords with custom responses. Each server sets i
 1. Go to https://discord.com/developers/applications and click **New Application**. Name it Hank.
 2. Open the **Bot** tab. Click **Reset Token**, copy the token, and keep it secret.
 3. On the same tab, under **Privileged Gateway Intents**, turn on **Message Content Intent** and save. Without this the bot can't read messages.
-4. Open **OAuth2 → URL Generator**. Tick the `bot` and `applications.commands` scopes, then the permissions **View Channels**, **Send Messages** and **Read Message History**.
+4. Open **OAuth2 → URL Generator**. Tick the `bot` and `applications.commands` scopes, then the permissions **View Channels**, **Send Messages**, **Embed Links** and **Read Message History**. Embed Links lets links in Hank's replies, like a YouTube video or Google Sheet, show a preview.
 5. Open the generated URL, pick your server, and authorize. Use the same URL to add Hank to more servers.
 
 ## 2. Run it
@@ -34,19 +34,22 @@ The bot only answers while this is running. To keep it online 24/7, use Railway 
 
 Anyone with the **Manage Server** permission can use these. Each server's keywords are separate.
 
-- `/hank add keyword:<word> response:<reply> [match:]` adds a reply. Add the same keyword again with another response and Hank picks one at random.
+- `/hank add keyword:<word> response:<reply> [match:] [cooldown:]` adds a reply. Add the same keyword again with another response and Hank picks one at random. `cooldown` is optional: the number of minutes Hank waits before replying to that keyword again on this server.
+- `/hank cooldown keyword:<word> minutes:<n>` changes a keyword's cooldown. `0` turns it off.
 - `/hank remove keyword:<word>` removes a keyword and all its replies.
+- `/hank command-add name:<name> response:<reply>` makes a `!name` command. When a message starts with `!name`, Hank replies. Add the same name again with another response and Hank picks one at random.
+- `/hank command-remove name:<name>` deletes a `!` command.
 - `/hank user-add user:@someone response:<reply> [cooldown:]` makes Hank reply to every message that person posts. `cooldown` is optional: the number of minutes to wait before replying to them again. Add the same user again with another response and Hank picks one at random.
 - `/hank user-remove user:@someone` stops replying to that person.
-- `/hank list` shows this server's keywords and user auto-replies. Only you see the answer.
+- `/hank list` shows this server's `!` commands, keywords and user auto-replies. Only you see the answer.
 
-A user auto-reply takes priority over keywords. While it's on cooldown, that person's messages can still trigger keywords. Hank sends at most one reply per message.
+`!` commands come first, then user auto-replies, then keywords. While a user auto-reply or keyword is on cooldown, the message can still trigger the next thing in line. Hank sends at most one reply per message.
 
 Matching ignores upper/lower case, and `{user}` in a reply mentions whoever triggered it. `match` is optional:
 
 - whole word (default): "hank" matches "hi hank!" but not "hankster".
 - anywhere: "pizza" matches "pizzas".
-- whole message only: the message must be exactly the keyword, which suits commands like `!rules`.
+- whole message only: the message must be exactly the keyword.
 
 To let other roles use the commands, go to **Server Settings → Integrations → Hank**.
 
