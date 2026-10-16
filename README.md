@@ -41,9 +41,11 @@ Anyone with the **Manage Server** permission can use these. Each server's keywor
 - `/hank command-remove name:<name>` deletes a `!` command.
 - `/hank user-add user:@someone response:<reply> [cooldown:]` makes Hank reply to every message that person posts. `cooldown` is optional: the number of minutes to wait before replying to them again. Add the same user again with another response and Hank picks one at random.
 - `/hank user-remove user:@someone` stops replying to that person.
-- `/hank list` shows this server's `!` commands, keywords and user auto-replies. Only you see the answer.
+- `/hank roll-add condition:<condition> response:<reply> [bot:] [cooldown:]` makes Hank reply when a dice bot rolls a matching total. `condition` can be `< 6`, `<= 5`, `> 15`, `>= 18`, `= 20` (or just `20`), or a range like `1-5`. `bot` is optional: pick the dice bot so Hank only reads its messages (default: any bot). Hank reads the number after `Total:` (or `Result:` / `=`), ignoring dice notation like `1d20`; with no label it uses the last number. In the reply, `{user}` mentions whoever rolled and `{roll}` is the total. Add the same condition again for random replies.
+- `/hank roll-remove condition:<condition>` stops replying to that roll condition.
+- `/hank list` shows this server's `!` commands, keywords, user auto-replies and dice rolls. Only you see the answer.
 
-`!` commands come first, then user auto-replies, then keywords. While a user auto-reply or keyword is on cooldown, the message can still trigger the next thing in line. Hank sends at most one reply per message.
+`!` commands come first, then user auto-replies, then keywords. While a user auto-reply or keyword is on cooldown, the message can still trigger the next thing in line. Hank sends at most one reply per message. Messages from other bots only ever trigger dice roll replies.
 
 Matching ignores upper/lower case, and `{user}` in a reply mentions whoever triggered it. `match` is optional:
 
