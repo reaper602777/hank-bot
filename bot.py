@@ -1,7 +1,7 @@
 """Hank bot: replies to keywords with custom responses.
 
 Each server manages its own keywords, ! commands, auto-replies to specific
-users, and replies to dice rolls with the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
+users, and replies to other bots' posts with the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
 apply on every server, and edits to it are picked up without a restart.
 """
 import html
@@ -25,9 +25,9 @@ DATA_DIR = Path(os.environ.get("HANK_DATA_DIR", HERE / "data"))
 MATCH_MODES = ("word", "contains", "exact")
 COMMAND_NAME = re.compile(r"^[\w-]{1,32}$")
 # "< 6", "<=5", ">= 18", "= 20", "20", "1-5", "1 to 5"
-ROLL_CONDITION = re.compile(r"^\s*(?:(<=|>=|<|>|==|=)\s*(-?\d+)|(-?\d+)\s*(?:-|to)\s*(-?\d+)|(-?\d+))\s*$")
-# Dice bots usually label the total ("Result: 7", "Total = 7", "= `7`"); otherwise use the last number
-ROLL_TOTAL = re.compile(r"(?:total|result|=)\W{0,4}(-?\d+)", re.IGNORECASE)
+NUMBER_CONDITION = re.compile(r"^\s*(?:(<=|>=|<|>|==|=)\s*(-?\d+)|(-?\d+)\s*(?:-|to)\s*(-?\d+)|(-?\d+))\s*$")
+# Bots usually label the number that matters ("Result: 7", "Total = 7", "= `7`"); otherwise use the last number
+LABELLED_NUMBER = re.compile(r"(?:total|result|=)\W{0,4}(-?\d+)", re.IGNORECASE)
 NUMBER = re.compile(r"-?\d+")
 DICE_NOTATION = re.compile(r"\b\d*d\d+\b", re.IGNORECASE)
 WEB_DIR = HERE / "web"
@@ -39,7 +39,7 @@ log = logging.getLogger("hank")
 
 def parse_condition(text):
     """Turn "< 6", "1-5", "20" etc. into a normalized string and a test, or (None, None)."""
-    m = ROLL_CONDITION.match(text)
+    m = NUMBER_CONDITION.match(text)
     if not m:
         return None, None
     op, n, low, high, exact = m.groups()
@@ -55,11 +55,14 @@ def parse_condition(text):
     return f"= {n}", n.__eq__
 
 
-def roll_total(text):
-    """The rolled total in a dice bot's message, or None if it has no number."""
+def post_number(text, label=""):
+    """The number a bot's post is about: the one after `label` if given, else a labelled total or the last number."""
     text = text.replace("*", "").replace("`", "").replace("_", "")
     text = DICE_NOTATION.sub(" ", text)  # "1d20" is the dice, not the roll
-    labelled = ROLL_TOTAL.findall(text)
+    if label:
+        found = re.findall(rf"{re.escape(label)}\W{{0,4}}(-?\d+)", text, re.IGNORECASE)
+        return int(found[-1]) if found else None
+    labelled = LABELLED_NUMBER.findall(text)
     if labelled:
         return int(labelled[-1])
     numbers = NUMBER.findall(text)
@@ -67,7 +70,7 @@ def roll_total(text):
 
 
 def message_text(message):
-    """A message's text plus the text of its embeds, where dice bots often put the result."""
+    """A message's text plus the text of its embeds, where bots often put the details."""
     parts = [message.content]
     for e in message.embeds:
         parts += [e.title or "", e.description or ""]
@@ -75,8 +78,8 @@ def message_text(message):
     return "\n".join(p for p in parts if p)
 
 
-def roller(message):
-    """Who asked the dice bot to roll: the slash command's user, else the first person mentioned."""
+def bot_user(message):
+    """Who a bot's post is for: whoever ran its slash command, else the first person mentioned."""
     meta = getattr(message, "interaction_metadata", None) or getattr(message, "interaction", None)
     if meta and meta.user:
         return meta.user
@@ -171,21 +174,23 @@ class ServerRules:
         )
         self.db.execute("CREATE INDEX IF NOT EXISTS commands_guild ON commands (guild_id, name)")
         self.db.execute(
-            """CREATE TABLE IF NOT EXISTS roll_rules (
+            """CREATE TABLE IF NOT EXISTS bot_rules (
                 id INTEGER PRIMARY KEY,
                 guild_id INTEGER NOT NULL,
-                condition TEXT NOT NULL,
-                bot_id INTEGER,
+                bot_id INTEGER NOT NULL DEFAULT 0,
+                contains TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                condition TEXT NOT NULL DEFAULT '',
                 cooldown INTEGER NOT NULL DEFAULT 0,
                 response TEXT NOT NULL
             )"""
         )
-        self.db.execute("CREATE INDEX IF NOT EXISTS roll_rules_guild ON roll_rules (guild_id)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS bot_rules_guild ON bot_rules (guild_id)")
         self.db.commit()
         self.cache = {}
         self.last_user_reply = {}
         self.last_keyword_reply = {}
-        self.last_roll_reply = {}
+        self.last_bot_reply = {}
         log.info("Using database %s", db_path)
 
     def add(self, guild_id, keyword, response, match, cooldown=None):
@@ -322,48 +327,61 @@ class ServerRules:
         self.last_user_reply[key] = now
         return random.choice(rows)[1]
 
-    def add_roll(self, guild_id, condition, bot_id, response, cooldown):
-        # One bot and cooldown per condition: adding again with new ones updates them
+    # A bot rule is identified by (bot_id, contains, label, condition); bot_id 0 means any bot, '' means not set
+    BOT_RULE = "bot_id = ? AND contains = ? AND label = ? AND condition = ?"
+
+    def add_bot_rule(self, guild_id, rule, response, cooldown):
+        # One cooldown per rule: adding again with a new one updates it
+        self.db.execute(f"UPDATE bot_rules SET cooldown = ? WHERE guild_id = ? AND {self.BOT_RULE}", (cooldown, guild_id, *rule))
         self.db.execute(
-            "UPDATE roll_rules SET bot_id = ?, cooldown = ? WHERE guild_id = ? AND condition = ?",
-            (bot_id, cooldown, guild_id, condition),
-        )
-        self.db.execute(
-            "INSERT INTO roll_rules (guild_id, condition, bot_id, cooldown, response) VALUES (?, ?, ?, ?, ?)",
-            (guild_id, condition, bot_id, cooldown, response),
+            "INSERT INTO bot_rules (guild_id, bot_id, contains, label, condition, cooldown, response) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, *rule, cooldown, response),
         )
         self.db.commit()
         return self.db.execute(
-            "SELECT COUNT(*) FROM roll_rules WHERE guild_id = ? AND condition = ?", (guild_id, condition)
+            f"SELECT COUNT(*) FROM bot_rules WHERE guild_id = ? AND {self.BOT_RULE}", (guild_id, *rule)
         ).fetchone()[0]
 
-    def remove_roll(self, guild_id, condition):
-        cur = self.db.execute("DELETE FROM roll_rules WHERE guild_id = ? AND condition = ?", (guild_id, condition))
+    def remove_bot_rule(self, guild_id, rule_id):
+        """Remove the rule that the reply with this id belongs to, with all its replies."""
+        row = self.db.execute(
+            "SELECT bot_id, contains, label, condition FROM bot_rules WHERE guild_id = ? AND id = ?", (guild_id, rule_id)
+        ).fetchone()
+        if not row:
+            return None
+        self.db.execute(f"DELETE FROM bot_rules WHERE guild_id = ? AND {self.BOT_RULE}", (guild_id, *row))
         self.db.commit()
-        return cur.rowcount
+        return row
 
-    def list_rolls(self, guild_id):
-        """Return [(condition, bot_id, cooldown_minutes, [responses])] in the order conditions were first added."""
+    def list_bot_rules(self, guild_id):
+        """Return [(first_id, (bot_id, contains, label, condition), cooldown_minutes, [responses])]."""
         grouped = {}
-        for condition, bot_id, cooldown, response in self.db.execute(
-            "SELECT condition, bot_id, cooldown, response FROM roll_rules WHERE guild_id = ? ORDER BY id",
+        for rule_id, bot_id, contains, label, condition, cooldown, response in self.db.execute(
+            "SELECT id, bot_id, contains, label, condition, cooldown, response FROM bot_rules "
+            "WHERE guild_id = ? ORDER BY id",
             (guild_id,),
         ):
-            grouped.setdefault(condition, [condition, bot_id, cooldown, []])[3].append(response)
+            rule = (bot_id, contains, label, condition)
+            grouped.setdefault(rule, [rule_id, rule, cooldown, []])[3].append(response)
         return [tuple(v) for v in grouped.values()]
 
-    def roll_response(self, guild_id, bot_id, total):
-        """A reply for the first roll condition this bot's total meets that isn't on cooldown."""
+    def bot_response(self, guild_id, bot_id, text):
+        """(reply, number) for the first rule this bot's post meets that isn't on cooldown, else (None, None)."""
         now = time.monotonic()
-        for condition, rule_bot, cooldown, responses in self.list_rolls(guild_id):
-            if rule_bot not in (None, bot_id) or not parse_condition(condition)[1](total):
+        for _, rule, cooldown, responses in self.list_bot_rules(guild_id):
+            rule_bot, contains, label, condition = rule
+            if rule_bot not in (0, bot_id) or contains.lower() not in text.lower():
                 continue
-            key = (guild_id, condition)
-            if cooldown and now - self.last_roll_reply.get(key, float("-inf")) < cooldown * 60:
+            number = post_number(text, label)
+            if condition and (number is None or not parse_condition(condition)[1](number)):
                 continue
-            self.last_roll_reply[key] = now
-            return random.choice(responses)
-        return None
+            key = (guild_id, rule)
+            if cooldown and now - self.last_bot_reply.get(key, float("-inf")) < cooldown * 60:
+                continue
+            self.last_bot_reply[key] = now
+            return random.choice(responses), number
+        return None, None
 
     def get(self, guild_id):
         if guild_id not in self.cache:
@@ -553,68 +571,92 @@ async def hank_user_remove(interaction: discord.Interaction, user: discord.User)
     await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-@hank.command(name="roll-add", description="Reply when a dice bot rolls a number, e.g. < 6. Add again for random replies.")
+def describe_bot_rule(rule, mention=True):
+    bot_id, contains, label, condition = rule
+    parts = [(f"<@{bot_id}>" if mention else "one bot") if bot_id else "any bot"]
+    if contains:
+        parts.append(f'says "{contains}"')
+    if condition:
+        parts.append(f"{label or 'number'} {condition}")
+    return ", ".join(parts)
+
+
+@hank.command(name="bot-add", description="Reply to another bot's posts, optionally only when a number matches. Add again for random replies.")
 @app_commands.describe(
-    condition="Which totals count: < 6, <= 5, > 15, >= 18, = 20, or a range like 1-5",
-    response="What Hank says. Use {user} to mention whoever rolled.",
-    bot="Only listen to this dice bot (default: any bot)",
-    cooldown="Minutes to wait before replying to this condition again (default: no cooldown)",
+    response="What Hank says. {user} mentions who the post is for, {number} is the number Hank read.",
+    bot="Only listen to this bot (default: any bot)",
+    contains="Only posts containing this text (default: any post)",
+    number="Only when the post's number matches: < 6, <= 5, > 15, >= 18, = 20, or a range like 1-5",
+    number_after="Which number to read, e.g. Total (default: after Total/Result/=, else the last number)",
+    cooldown="Minutes to wait before replying to this again (default: no cooldown)",
 )
-async def hank_roll_add(
+async def hank_bot_add(
     interaction: discord.Interaction,
-    condition: app_commands.Range[str, 1, 20],
     response: app_commands.Range[str, 1, 2000],
     bot: Optional[discord.Member] = None,
+    contains: Optional[app_commands.Range[str, 1, 100]] = None,
+    number: Optional[app_commands.Range[str, 1, 20]] = None,
+    number_after: Optional[app_commands.Range[str, 1, 50]] = None,
     cooldown: app_commands.Range[int, 0, 10080] = 0,
 ):
-    condition, _ = parse_condition(condition)
-    if not condition:
+    condition = ""
+    if number:
+        condition, _ = parse_condition(number)
+        if not condition:
+            await interaction.response.send_message(
+                "I couldn't read that number. Try `< 6`, `>= 18`, `= 20` or a range like `1-5`.", ephemeral=True
+            )
+            return
+    if bot and not bot.bot:
+        await interaction.response.send_message("That's a person. Use `/hank user-add` for people.", ephemeral=True)
+        return
+    if not (bot or contains or condition):
         await interaction.response.send_message(
-            "I couldn't read that condition. Try `< 6`, `>= 18`, `= 20` or a range like `1-5`.", ephemeral=True
+            "Pick a bot, some text, or a number, or Hank would reply to every bot post on the server.", ephemeral=True
         )
         return
-    if bot and not bot.bot:
-        await interaction.response.send_message("That's a person. Pick the dice bot, or leave it empty.", ephemeral=True)
-        return
-    total = server_rules.add_roll(interaction.guild_id, condition, bot.id if bot else None, response, cooldown)
+    label = (number_after or "").strip() if condition else ""
+    rule = (bot.id if bot else 0, (contains or "").strip(), label, condition)
+    total = server_rules.add_bot_rule(interaction.guild_id, rule, response, cooldown)
     extra = f" It now has {total} replies to pick from." if total > 1 else ""
-    who = bot.mention if bot else "a bot"
-    wait = f" at most once every {cooldown} min" if cooldown else ""
+    wait = f", at most once every {cooldown} min" if cooldown else ""
     await interaction.response.send_message(
-        f"Hank will reply{wait} when {who} rolls **{condition}**.{extra}",
+        f"Hank will reply to bot posts: {describe_bot_rule(rule)}{wait}.{extra}",
         ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
-@hank.command(name="roll-remove", description="Stop replying to a dice roll condition")
-@app_commands.describe(condition="The condition to remove")
-async def hank_roll_remove(interaction: discord.Interaction, condition: str):
-    normalized = parse_condition(condition)[0] or condition
-    removed = server_rules.remove_roll(interaction.guild_id, normalized)
-    msg = f"Removed rolls **{normalized}**." if removed else f"There's no roll condition **{condition}** on this server."
-    await interaction.response.send_message(msg, ephemeral=True)
+@hank.command(name="bot-remove", description="Stop replying to a bot post rule")
+@app_commands.describe(rule="The rule to remove")
+async def hank_bot_remove(interaction: discord.Interaction, rule: str):
+    removed = server_rules.remove_bot_rule(interaction.guild_id, int(rule)) if rule.isdigit() else None
+    msg = f"Removed {describe_bot_rule(removed)}." if removed else "Pick a rule from the list."
+    await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-@hank_roll_remove.autocomplete("condition")
-async def roll_autocomplete(interaction: discord.Interaction, current: str):
-    return [
-        app_commands.Choice(name=condition, value=condition)
-        for condition, _, _, _ in server_rules.list_rolls(interaction.guild_id)
-        if current.replace(" ", "") in condition.replace(" ", "")
-    ][:25]
+@hank_bot_remove.autocomplete("rule")
+async def bot_rule_autocomplete(interaction: discord.Interaction, current: str):
+    choices = []
+    for rule_id, rule, _, responses in server_rules.list_bot_rules(interaction.guild_id):
+        bot = interaction.guild.get_member(rule[0]) if rule[0] else None
+        name = describe_bot_rule(rule, mention=False).replace("one bot", bot.display_name if bot else "a bot", 1)
+        name = f"{name} → {responses[0]}"[:100]
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=str(rule_id)))
+    return choices[:25]
 
 
-@hank.command(name="list", description="Show this server's keywords, !commands, user auto-replies and dice rolls")
+@hank.command(name="list", description="Show this server's keywords, !commands, user and bot auto-replies")
 async def hank_list(interaction: discord.Interaction):
     rules = server_rules.list(interaction.guild_id)
     users = server_rules.list_users(interaction.guild_id)
     commands = server_rules.list_commands(interaction.guild_id)
-    rolls = server_rules.list_rolls(interaction.guild_id)
-    if not rules and not users and not commands and not rolls:
+    bot_rules = server_rules.list_bot_rules(interaction.guild_id)
+    if not rules and not users and not commands and not bot_rules:
         await interaction.response.send_message(
             "Nothing set yet. Add a keyword with `/hank add`, a command with `/hank command-add`, "
-            "a user with `/hank user-add`, or a dice roll with `/hank roll-add`.",
+            "a user with `/hank user-add`, or a bot reply with `/hank bot-add`.",
             ephemeral=True,
         )
         return
@@ -631,10 +673,9 @@ async def hank_list(interaction: discord.Interaction):
         extra = f" ({', '.join(notes)})" if notes else ""
         lines.append(f"**{kw}**{extra}")
         lines.extend(f"  → {r}" for r in responses)
-    for condition, bot_id, cooldown, responses in rolls:
-        notes = ([f"<@{bot_id}>"] if bot_id else []) + ([f"every {cooldown} min"] if cooldown else [])
-        extra = f" ({', '.join(notes)})" if notes else ""
-        lines.append(f"**roll {condition}**{extra}")
+    for _, rule, cooldown, responses in bot_rules:
+        wait = f" (every {cooldown} min)" if cooldown else ""
+        lines.append(f"**Bot posts:** {describe_bot_rule(rule)}{wait}")
         lines.extend(f"  → {r}" for r in responses)
     text = "\n".join(lines)
     if len(text) > 1900:
@@ -702,17 +743,15 @@ async def on_message(message: discord.Message):
 
 
 async def on_bot_message(message: discord.Message):
-    """Bots only trigger dice roll replies, so Hank never answers itself or loops with another bot."""
+    """Bots only trigger bot post replies, so Hank never answers itself or loops with another bot."""
     if message.author == client.user or not message.guild:
         return
-    total = roll_total(message_text(message))
-    if total is None:
-        return
-    response = server_rules.roll_response(message.guild.id, message.author.id, total)
+    response, number = server_rules.bot_response(message.guild.id, message.author.id, message_text(message))
     if response:
-        person = roller(message)
+        person = bot_user(message)
+        response = response.replace("{user}", person.mention if person else "")
         await message.channel.send(
-            response.replace("{user}", person.mention if person else "").replace("{roll}", str(total)),
+            response.replace("{number}", "" if number is None else str(number)),
             allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
         )
 
