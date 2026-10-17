@@ -41,9 +41,17 @@ Anyone with the **Manage Server** permission can use these. Each server's keywor
 - `/hank command-remove name:<name>` deletes a `!` command.
 - `/hank user-add user:@someone response:<reply> [cooldown:]` makes Hank reply to every message that person posts. `cooldown` is optional: the number of minutes to wait before replying to them again. Add the same user again with another response and Hank picks one at random.
 - `/hank user-remove user:@someone` stops replying to that person.
-- `/hank list` shows this server's `!` commands, keywords and user auto-replies. Only you see the answer.
+- `/hank bot-add response:<reply> [bot:] [contains:] [number:] [number_after:] [cooldown:]` makes Hank reply to other bots' posts. Narrow it down with any mix of:
+  - `bot`: only that bot (default: any bot).
+  - `contains`: only posts containing that text.
+  - `number`: only when the post's number matches `< 6`, `<= 5`, `> 15`, `>= 18`, `= 20` (or just `20`), or a range like `1-5`.
+  - `number_after`: which number to read, e.g. `Total` reads the number after "Total:". By default Hank uses the number after `Total`, `Result` or `=`, otherwise the last number, and ignores dice notation like `1d20`.
 
-`!` commands come first, then user auto-replies, then keywords. While a user auto-reply or keyword is on cooldown, the message can still trigger the next thing in line. Hank sends at most one reply per message.
+  In the reply, `{user}` mentions who the post is for (whoever ran the bot's command, or the first person it mentions) and `{number}` is the number Hank read. Add the same rule again for random replies. Example for a dice bot: `/hank bot-add bot:@Dice number:< 6 number_after:Total response:Ouch {user}, only a {number}`.
+- `/hank bot-remove rule:<rule>` stops one of those (pick it from the list).
+- `/hank list` shows this server's `!` commands, keywords, and user and bot auto-replies. Only you see the answer.
+
+`!` commands come first, then user auto-replies, then keywords. While a user auto-reply or keyword is on cooldown, the message can still trigger the next thing in line. Hank sends at most one reply per message. Posts from other bots only ever trigger `/hank bot-add` replies, and Hank never replies to itself.
 
 Matching ignores upper/lower case, and `{user}` in a reply mentions whoever triggered it. `match` is optional:
 
