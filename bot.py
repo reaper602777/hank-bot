@@ -1,7 +1,7 @@
 """Hank bot: replies to keywords with custom responses.
 
 Each server manages its own keywords, ! commands, auto-replies to specific
-users, and replies to other bots' posts with the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
+users, replies to other bots' posts, and who to ignore with the /hank slash commands; those are stored in a SQLite database. keywords.json holds optional global rules that
 apply on every server, and edits to it are picked up without a restart.
 """
 import html
@@ -186,6 +186,13 @@ class ServerRules:
             )"""
         )
         self.db.execute("CREATE INDEX IF NOT EXISTS bot_rules_guild ON bot_rules (guild_id)")
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS ignored (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )"""
+        )
         self.db.commit()
         self.cache = {}
         self.last_user_reply = {}
@@ -326,6 +333,25 @@ class ServerRules:
             return None
         self.last_user_reply[key] = now
         return random.choice(rows)[1]
+
+    def ignore(self, guild_id, user_id):
+        """Never reply to this user (or bot) on this server. False if they were already ignored."""
+        cur = self.db.execute("INSERT OR IGNORE INTO ignored (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def unignore(self, guild_id, user_id):
+        cur = self.db.execute("DELETE FROM ignored WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+        self.db.commit()
+        return cur.rowcount
+
+    def list_ignored(self, guild_id):
+        return [row[0] for row in self.db.execute("SELECT user_id FROM ignored WHERE guild_id = ? ORDER BY rowid", (guild_id,))]
+
+    def is_ignored(self, guild_id, user_id):
+        return self.db.execute(
+            "SELECT 1 FROM ignored WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        ).fetchone() is not None
 
     # A bot rule is identified by (bot_id, contains, label, condition); bot_id 0 means any bot, '' means not set
     BOT_RULE = "bot_id = ? AND contains = ? AND label = ? AND condition = ?"
@@ -571,6 +597,24 @@ async def hank_user_remove(interaction: discord.Interaction, user: discord.User)
     await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
+@hank.command(name="ignore-add", description="Never reply to a user or bot on this server, whatever they say")
+@app_commands.describe(user="Who Hank should ignore")
+async def hank_ignore_add(interaction: discord.Interaction, user: discord.Member):
+    if server_rules.ignore(interaction.guild_id, user.id):
+        msg = f"Hank will ignore {user.mention} on this server. Undo it with `/hank ignore-remove`."
+    else:
+        msg = f"Hank was already ignoring {user.mention}."
+    await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+@hank.command(name="ignore-remove", description="Let Hank reply to an ignored user or bot again")
+@app_commands.describe(user="The user to stop ignoring")
+async def hank_ignore_remove(interaction: discord.Interaction, user: discord.User):
+    removed = server_rules.unignore(interaction.guild_id, user.id)
+    msg = f"Hank will reply to {user.mention} again." if removed else f"Hank wasn't ignoring {user.mention}."
+    await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
 def describe_bot_rule(rule, mention=True):
     bot_id, contains, label, condition = rule
     parts = [(f"<@{bot_id}>" if mention else "one bot") if bot_id else "any bot"]
@@ -647,13 +691,14 @@ async def bot_rule_autocomplete(interaction: discord.Interaction, current: str):
     return choices[:25]
 
 
-@hank.command(name="list", description="Show this server's keywords, !commands, user and bot auto-replies")
+@hank.command(name="list", description="Show this server's keywords, !commands, user and bot auto-replies, and who's ignored")
 async def hank_list(interaction: discord.Interaction):
     rules = server_rules.list(interaction.guild_id)
     users = server_rules.list_users(interaction.guild_id)
     commands = server_rules.list_commands(interaction.guild_id)
     bot_rules = server_rules.list_bot_rules(interaction.guild_id)
-    if not rules and not users and not commands and not bot_rules:
+    ignored = server_rules.list_ignored(interaction.guild_id)
+    if not rules and not users and not commands and not bot_rules and not ignored:
         await interaction.response.send_message(
             "Nothing set yet. Add a keyword with `/hank add`, a command with `/hank command-add`, "
             "a user with `/hank user-add`, or a bot reply with `/hank bot-add`.",
@@ -677,6 +722,8 @@ async def hank_list(interaction: discord.Interaction):
         wait = f" (every {cooldown} min)" if cooldown else ""
         lines.append(f"**Bot posts:** {describe_bot_rule(rule)}{wait}")
         lines.extend(f"  → {r}" for r in responses)
+    if ignored:
+        lines.append("**Ignored:** " + ", ".join(f"<@{user_id}>" for user_id in ignored))
     text = "\n".join(lines)
     if len(text) > 1900:
         text = text[:1900] + "\n…and more"
@@ -734,6 +781,8 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         await on_bot_message(message)
         return
+    if message.guild and server_rules.is_ignored(message.guild.id, message.author.id):
+        return
     response = find_response(message.guild.id if message.guild else None, message.author.id, message.content)
     if response:
         await message.channel.send(
@@ -746,9 +795,13 @@ async def on_bot_message(message: discord.Message):
     """Bots only trigger bot post replies, so Hank never answers itself or loops with another bot."""
     if message.author == client.user or not message.guild:
         return
+    person = bot_user(message)
+    if server_rules.is_ignored(message.guild.id, message.author.id) or (
+        person and server_rules.is_ignored(message.guild.id, person.id)
+    ):
+        return
     response, number = server_rules.bot_response(message.guild.id, message.author.id, message_text(message))
     if response:
-        person = bot_user(message)
         response = response.replace("{user}", person.mention if person else "")
         await message.channel.send(
             response.replace("{number}", "" if number is None else str(number)),
