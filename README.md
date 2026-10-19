@@ -49,7 +49,9 @@ Anyone with the **Manage Server** permission can use these. Each server's keywor
 
   In the reply, `{user}` mentions who the post is for (whoever ran the bot's command, or the first person it mentions) and `{number}` is the number Hank read. Add the same rule again for random replies. Example for a dice bot: `/hank bot-add bot:@Dice number:< 6 number_after:Total response:Ouch {user}, only a {number}`.
 - `/hank bot-remove rule:<rule>` stops one of those (pick it from the list).
-- `/hank list` shows this server's `!` commands, keywords, and user and bot auto-replies. Only you see the answer.
+- `/hank ignore-add user:@someone` makes Hank never reply to that person on this server: no `!` commands, auto-replies or keywords. Pick a bot to ignore its posts too, and bot posts made for an ignored person (like their dice rolls) are skipped as well.
+- `/hank ignore-remove user:@someone` lets Hank reply to them again.
+- `/hank list` shows this server's `!` commands, keywords, user and bot auto-replies, and who's ignored. Only you see the answer.
 
 `!` commands come first, then user auto-replies, then keywords. While a user auto-reply or keyword is on cooldown, the message can still trigger the next thing in line. Hank sends at most one reply per message. Posts from other bots only ever trigger `/hank bot-add` replies, and Hank never replies to itself.
 
